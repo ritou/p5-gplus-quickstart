@@ -1,9 +1,9 @@
 # p5-gplus-quickstart
 
-This is 
+This quick-start app is built in Perl and lets you get started with the Google+ platform in a few minutes.
 
-* [use plusone.js and server-side library](https://developers.google.com/+/web/signin/server-side-flow?hl=ja#using_one-time-code_flow)
-* [use server-side library only](https://developers.google.com/accounts/docs/OAuth2Login?hl=ja)
+* [Sign-In flow using plusone.js and server-side library](https://developers.google.com/+/web/signin/server-side-flow?hl=ja#using_one-time-code_flow)
+* [Sign-In flow using server-side library only](https://developers.google.com/accounts/docs/OAuth2Login?hl=ja)
 
 ## Step 1: Enable the Google+ API
 
@@ -30,29 +30,29 @@ In the resulting Client ID for web application section, note or copy the Client 
 
 ## Step 2: Set up the Perl quick-start app
 
-0. setup perl and carton environment  
+0. Setup perl and carton environment  
 [xbuild](https://github.com/tagomoris/xbuild) is very useful.
 1. Get the latest version of the quick-start. One way is to use git to clone the application repository.
 
     $ git clone https://github.com/ritou/p5-gplus-quickstart.git
     $ cd p5-gplus-quickstart
 
-3. carton install
+3. Install libraries
 
     $ carton install
 
-4. modify configuration for your client credentials
+4. Modify configuration for your client credentials
 
     $ cp app.psgi.sample app.psgi
     $ vim app.psgi
 
 ## step 3: Run the application
 
-1. run psgi app
+1. Run psgi app
 
     $ carton exec -- plackup -p (your app's port number)
 
-2. access
+2. Access your application
 
     http://(your app's hostname):(your app's port number)
 
