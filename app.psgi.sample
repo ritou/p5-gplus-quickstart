@@ -220,6 +220,7 @@ __DATA__
                 <p><a href="/signin_plusone">use plusone.js and library</a></p>
                 <p><a href="/signin_library">use library</a></p>
             </div>
+            <hr>
             <div id="signinButton">
                 <span class="g-signin"
                     data-approvalprompt="force"
@@ -293,6 +294,7 @@ function signInCallback(authResult) {
                 <p><a href="/signin_plusone">use plusone.js and library</a></p>
                 <p><a href="/signin_library">use library</a></p>
             </div>
+            <hr>
             <div id="signinButton">
             <a href="/signin_library/redirect">Login with Google Account</a>
             </div>
