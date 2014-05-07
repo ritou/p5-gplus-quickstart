@@ -1,0 +1,348 @@
+use strict;
+use warnings;
+use utf8;
+use File::Spec;
+use File::Basename;
+use lib File::Spec->catdir(dirname(__FILE__), 'extlib', 'lib', 'perl5');
+use lib File::Spec->catdir(dirname(__FILE__), 'lib');
+use Amon2::Lite;
+use JSON qw(encode_json);
+use Crypt::OpenSSL::Random qw/random_pseudo_bytes/;
+use OIDC::Lite::Client::WebServer;
+use OIDC::Lite::Model::IDToken;
+
+our $VERSION = '0.12';
+
+# put your configuration here
+sub load_config {
+    my $c = shift;
+
+    my $mode = $c->mode_name || 'development';
+
+    +{
+        'Google' => {
+            'client_id' => q{your app's client_id},
+            'client_secret' => q{your app's client_secret},
+            'redirect_uri' => q{your app's redirect_uri},
+            'scope' => q{https://www.googleapis.com/auth/plus.login openid email},
+        },
+    }
+}
+
+get '/' => sub {
+    my $c = shift;
+    return $c->render('index.tt');
+};
+
+get '/signin_plusone' => sub {
+    my $c = shift;
+    my $config = $c->config->{'Google'};
+
+    # save state
+    my $state = unpack('H*', random_pseudo_bytes(32));
+    $c->session->set('state', $state);
+    
+    return $c->render('signin_plusone.tt' => {
+        'state' => $state,
+        'client_id' => $config->{'client_id'},
+        'scope' => $config->{'scope'},
+        'csrf_token' => $c->get_csrf_defender_token(),
+    });
+};
+
+post '/signin_plusone/gettoken' => sub {
+    my $c = shift;
+    my $config = $c->config->{'Google'};
+    my $params = $c->req->body_parameters();
+
+    my $session_state = $c->session->get('state') or
+        return $c->render_json(+{error => 'invalid state'});
+
+    unless($params->{'state'} and $params->{'state'} eq $session_state) {
+        return $c->render_json(+{error => 'invalid state'});
+    }
+
+    # get token
+    my $code = $params->{'code'} or
+        return $c->render_json(+{error => 'invalid code'});
+
+    my $client = oauth_client($config);
+    my $token = $client->get_access_token(
+        code         => $code,
+        redirect_uri => q{postmessage},
+    ) or return $c->render_json(+{error => 'invalid code'});
+
+    my $id_token = OIDC::Lite::Model::IDToken->load($token->id_token);
+    my $user = {
+        'id' => $id_token->payload->{'sub'},
+        'email' => $id_token->payload->{'email'}
+    };
+
+    return $c->render_json($user);
+};
+
+get '/signin_library' => sub {
+    my $c = shift;
+    return $c->render('signin_library.tt');
+};
+
+get '/signin_library/redirect' => sub {
+    my $c = shift;
+    my $config = $c->config->{'Google'};
+
+    my $state = unpack('H*', random_pseudo_bytes(32));
+    $c->session->set('state', $state);
+
+    my $client = oauth_client($config);
+    my $uri = $client->uri_to_redirect(
+        redirect_uri => $config->{'redirect_uri'},
+        scope        => $config->{'scope'},
+        state        => $state,
+        extra        => {
+            device_name => ''
+        },
+    );
+
+    return $c->redirect($uri);
+};
+
+get '/signin_library/callback' => sub {
+    my $c = shift;
+    my $config = $c->config->{'Google'};
+    my $params = $c->req->query_parameters();
+
+    my $session_state = $c->session->get('state') or
+        return $c->render('signin_library.tt' => {
+            error => q{invalid state}
+        });
+
+    unless($params->{'state'} and $params->{'state'} eq $session_state) {
+        return $c->render('signin_library.tt' => {
+            error => q{invalid state}
+        });
+    }
+    $c->session->set('state', '');
+
+    # get token
+    my $code = $params->{'code'} or
+        return $c->render('signin_library.tt' => {
+            error => q{missing code}
+        });
+
+    my $client = oauth_client($config);
+    my $token = $client->get_access_token(
+        code         => $code,
+        redirect_uri => $config->{'redirect_uri'},
+    );
+    
+    unless ($token) {
+        return $c->render('signin_library.tt' => {
+            error => q{invalid code}
+        });
+    }
+
+    my $id_token = OIDC::Lite::Model::IDToken->load($token->id_token);
+    my $user = {
+        'id' => $id_token->payload->{'sub'},
+        'email' => $id_token->payload->{'email'}
+    };
+    my $people_data = get_people_data($token->access_token);
+ 
+    return $c->render('signin_library.tt' => {
+        user => encode_json ($user),
+        people_data => $people_data
+    });
+};
+
+sub oauth_client {
+    my ($config) = @_;
+
+    return OIDC::Lite::Client::WebServer->new(
+        id               => $config->{'client_id'},
+        secret           => $config->{'client_secret'},
+        authorize_uri    => q{https://accounts.google.com/o/oauth2/auth},
+        access_token_uri => q{https://accounts.google.com/o/oauth2/token},
+    );
+}
+
+sub get_people_data {
+    my ($token) = @_;
+    my $req = HTTP::Request->new( GET => q{https://www.googleapis.com/plus/v1/people/me} );
+    $req->header( Authorization => sprintf(q{Bearer %s}, $token) );
+
+    my $ua = LWP::UserAgent->new;
+    # Because SSL error occurred for www.googleapis.com, I ignore it temporarily.
+    $ua->ssl_opts( verify_hostname => 0 );
+    return $ua->request($req)->content;
+}
+
+# load plugins
+__PACKAGE__->load_plugin('Web::CSRFDefender');
+__PACKAGE__->load_plugin('Web::JSON');
+
+__PACKAGE__->enable_session();
+
+__PACKAGE__->to_app(handle_static => 1);
+
+__DATA__
+
+@@ signin_plusone.tt
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>gplusquickstart</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+<!--
+    <script type="text/javascript" src="[% uri_for('/static/js/main.js') %]"></script>
+-->
+    <link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
+    <script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
+    <link rel="stylesheet" href="[% uri_for('/static/css/main.css') %]">
+    <script type="text/javascript">
+        (function () {
+            var po = document.createElement('script');
+            po.type = 'text/javascript';
+            po.async = true;
+            po.src = 'https://plus.google.com/js/client:plusone.js?onload=start';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(po, s);
+        })();
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header><h1>gplusquickstart</h1></header>
+        <section class="row">
+            <p>This is a gplusquickstart.</p>
+            <div>
+                <p><a href="/signin_plusone">use plusone.js and library</a></p>
+                <p><a href="/signin_library">use library</a></p>
+            </div>
+            <div id="signinButton">
+                <span class="g-signin"
+                    data-approvalprompt="force"
+                    data-scope="[% $scope %]"
+                    data-clientid="[% $client_id %]"
+                    data-state="[% $state %]"
+                    data-redirecturi="postmessage"
+                    data-cookiepolicy="single_host_origin"
+                    data-callback="signInCallback">
+                </span>
+            </div>
+            <div>
+                <a href="javascript:document.location.href=document.location.href;">Reload</a>
+            </div>
+            <h3>User Data</h3>
+            <div id="user"></div>
+            <h3>Error</h3>
+            <div id="error"></div>
+        </section>
+    </div>
+</body>
+<script type="text/javascript">
+function signInCallback(authResult) {
+  if (authResult['code']) {
+
+    $('#signinButton').attr('style', 'display: none');
+    var data = "code=" + authResult['code'] + "&state=" + authResult['state'] + "&csrf_token=[% $csrf_token %]";
+    $('#user').empty();
+    $('#error').empty();
+    $.ajax({
+      type: 'POST',
+      url: '/signin_plusone/gettoken',
+      data: data,
+      success: function(result) {
+          console.log(result);
+          console.log(result.error);
+          if (result.error) {
+              $('#error').append(JSON.stringify(result)); 
+          }else{
+              $('#user').append(JSON.stringify(result)); 
+          }
+      },
+      processData: false
+    });
+  } else {
+    // todo: error handling
+  }
+}
+</script>
+</html>
+
+@@ signin_library.tt
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>gplusquickstart</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+    <script type="text/javascript" src="[% uri_for('/static/js/main.js') %]"></script>
+    <link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
+    <script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
+    <link rel="stylesheet" href="[% uri_for('/static/css/main.css') %]">
+</head>
+<body>
+    <div class="container">
+        <header><h1>gplusquickstart</h1></header>
+        <section class="row">
+            <p>This is a gplusquickstart.</p>
+            <div>
+                <p><a href="/signin_plusone">use plusone.js and library</a></p>
+                <p><a href="/signin_library">use library</a></p>
+            </div>
+            <div id="signinButton">
+            <a href="/signin_library/redirect">Login with Google Account</a>
+            </div>
+            [% IF $user %]
+            <h3>User Data</h3>
+            <pre id="user">[% $user %]</pre>
+            [% END %]
+            [% IF $people_data %]
+            <h3>People Data</h3>
+            <pre id="people_data">[% $people_data %]</pre>
+            [% END %]
+            [% IF $error %]
+            <h3>Error</h3>
+            <div id="error">[% $error %]</div>
+            [% END %]
+        </section>
+    </div>
+</body>
+</html>
+
+@@ index.tt
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>gplusquickstart</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+    <script type="text/javascript" src="[% uri_for('/static/js/main.js') %]"></script>
+    <link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
+    <script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
+    <link rel="stylesheet" href="[% uri_for('/static/css/main.css') %]">
+</head>
+<body>
+    <div class="container">
+        <header><h1>gplusquickstart</h1></header>
+        <section class="row">
+            <p>This is a gplusquickstart.</p>
+            <div>
+                <p><a href="/signin_plusone">use plusone.js and library</a></p>
+                <p><a href="/signin_library">use library</a></p>
+            </div>
+        </section>
+    </div>
+</body>
+</html>
+
+@@ /static/js/main.js
+
+@@ /static/css/main.css
+footer {
+    text-align: right;
+}
