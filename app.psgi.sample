@@ -99,7 +99,7 @@ get '/signin_library/redirect' => sub {
         scope        => $config->{'scope'},
         state        => $state,
         extra        => {
-            device_name => ''
+            prompt => 'consent',
         },
     );
 
